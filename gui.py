@@ -29,7 +29,7 @@ startfen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 
 
 # Extract piece images based on the FEN string
-piece_images = extract_piece_images(startimg, startfen)
+board_size, piece_images = extract_piece_images(startimg, startfen)
 
 ###############################################
 from anytree import Node, RenderTree
@@ -132,7 +132,10 @@ class Ui(QtWidgets.QMainWindow):
         screenshot_cv = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
         cv2.imwrite(screenshot_path, screenshot_cv)
         chessboard_image, coordinates = get_chessboard( screenshot_path, template_path, output_path )
-        fen = extract_fen_from_image( output_path, piece_images )
+        player = "W"
+        if self.cbTurnBoard.isChecked():
+            player = "B"
+        fen = extract_fen_from_image( output_path, board_size, piece_images, player )
         self.tFen.setPlainText( fen )
 
         self.updateBoard()
@@ -242,7 +245,8 @@ class Ui(QtWidgets.QMainWindow):
             self.tBookText.setText("Best {0}".format(bestMove))
             move = chess.Move.from_uci(bestMove)
 
-            move = chess.Move.from_uci(bestMove)
+            if self.cbOppAutoMove.isChecked():
+                move = chess.Move.from_uci(bestMove)
 
             # Extracting the from_square and to_square
             square = move.from_square

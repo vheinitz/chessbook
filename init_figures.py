@@ -155,7 +155,7 @@ def extract_piece_images(image_path, fen):
                 # Move to the next file (column)
                 file_idx += 1
 
-    return piece_images
+    return (width, height), piece_images
 
 
 
@@ -299,19 +299,25 @@ def match_figure(square_image, templates):
     return best_match
 
 
-def extract_fen_from_image(image_path, templates, player="W"):
+import cv2
+import numpy as np
+
+def extract_fen_from_image(image_path, board_size templates, player="W"):
     """
     Extracts the FEN string from the given board image using figure templates.
 
     Parameters:
     - image_path (str): Path to the board image.
     - templates (dict): Dictionary of figure templates and descriptors.
+    - player (str): "W" if the player is white (bottom), "B" if the player is black (bottom).
 
     Returns:
     - fen (str): The FEN string representing the board position.
     """
     # Load the board image and preprocess it
     image = cv2.imread(image_path)
+    image = cv2.resize(image, board_size, interpolation=cv2.INTER_LINEAR)
+
     gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
     # Calculate the size of each square (assuming an 8x8 board)
@@ -327,11 +333,15 @@ def extract_fen_from_image(image_path, templates, player="W"):
         empty_count = 0
 
         for file in range(8):
+            # Adjust the coordinates for the player perspective
+            actual_rank = rank if player == "W" else 7 - rank
+            actual_file = file if player == "W" else 7 - file
+
             # Calculate the coordinates of the current square
-            x_start = file * square_size +2
-            y_start = rank * square_size +2
-            x_end = x_start + square_size -2
-            y_end = y_start + square_size -2
+            x_start = actual_file * square_size + 2
+            y_start = actual_rank * square_size + 2
+            x_end = x_start + square_size - 2
+            y_end = y_start + square_size - 2
 
             # Extract the square image
             square_image = gray_image[y_start:y_end, x_start:x_end]
@@ -347,7 +357,7 @@ def extract_fen_from_image(image_path, templates, player="W"):
 
             # Perform morphological operations to clean up the binary image
             kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            #binary_square = cv2.morphologyEx(binary_square, cv2.MORPH_CLOSE, kernel)
+            # binary_square = cv2.morphologyEx(binary_square, cv2.MORPH_CLOSE, kernel)
 
             # Find contours of the figure
             contours, _ = cv2.findContours(binary_square, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -362,9 +372,7 @@ def extract_fen_from_image(image_path, templates, player="W"):
             figure_only = cv2.bitwise_and(square_image, mask)
 
             # Match the square with the figure templates
-            #matched_piece = match_figure(figure_only, templates)
             matched_piece = match_figure_by_moments(figure_only, templates)
-            
 
             if matched_piece:
                 # Map the matched piece to the FEN character
@@ -387,6 +395,7 @@ def extract_fen_from_image(image_path, templates, player="W"):
     # Join the rows with slashes to form the FEN string
     fen = "/".join(fen_rows)
     return fen
+
 
 
 if __name__ == "__main__":
