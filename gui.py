@@ -1,3 +1,4 @@
+
 from PyQt5 import QtWidgets, uic, QtSvg, QtGui
 import sys
 from chessboard import display
@@ -12,15 +13,46 @@ from PyQt5.QtCore import Qt, QEvent, QSize, QTimer
 from PyQt5.QtSvg import QSvgWidget
 from PyQt5.QtCore import QTimer
 
+import cv2
+import numpy as np
+import pyautogui
+
+from getboard import get_chessboard
+from init_figures import extract_piece_images
+from init_figures import extract_fen_from_image
+
+screenshot_path = "/tmp/screenshot.png"
+template_path = "./templ1.png"
+startimg = "./startboard.png"
+output_path = "./extracted_chessboard.png"
+startfen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+
+
+# Extract piece images based on the FEN string
+piece_images = extract_piece_images(startimg, startfen)
 
 ###############################################
 from anytree import Node, RenderTree
 from anytree.exporter import JsonExporter
 from anytree.importer import JsonImporter
+from anytree import NodeMixin
+
+
+class ChessMoveNode(NodeMixin):  # Inherits from NodeMixin
+    def __init__(self, ntype, name, info=None, data=None, parent=None, children=None):
+        super().__init__()
+        self.ntype = ntype
+        self.name = name
+        self.info = info
+        self.data = data
+        self.parent = parent
+        if children:  # Children can be a list of nodes
+            self.children = children
+
 
 
 # Create Tree
-root = Node("e2e4")
+root = ChessMoveNode("start","scandinavian", data="d2d4")
 child1 = Node("a7a6", parent=root)
 child2 = Node("h7h6", parent=root)
 
@@ -50,6 +82,7 @@ class Ui(QtWidgets.QMainWindow):
         self.bForward.clicked.connect(self.forwardClicked)
         self.bSetFen.clicked.connect(self.processFen)
         self.bMove.clicked.connect(self.move)
+        self.bGetPos.clicked.connect(self.getPos)
 
         self.stockfish = Stockfish(path="stockfish/stockfish",
                       depth=18, parameters={"Threads": 2, "Minimum Thinking Time": 3})
@@ -90,6 +123,18 @@ class Ui(QtWidgets.QMainWindow):
             self.board.reset()
         else:
             self.board.set_fen(fen)
+        self.updateBoard()
+
+    def getPos(self):
+        move_uci = self.eMove.text()
+        screenshot = pyautogui.screenshot()
+        screenshot_np = np.array(screenshot)
+        screenshot_cv = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
+        cv2.imwrite(screenshot_path, screenshot_cv)
+        chessboard_image, coordinates = get_chessboard( screenshot_path, template_path, output_path )
+        fen = extract_fen_from_image( output_path, piece_images )
+        self.tFen.setPlainText( fen )
+
         self.updateBoard()
 
     def move(self):
