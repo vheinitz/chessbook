@@ -1,10 +1,12 @@
 import cv2
 import numpy as np
 
+
 # Define piece mappings for FEN notation
 piece_map = {
     'p': "black_pawn", 'r': "black_rook", 'n': "black_knight", 'b': "black_bishop", 'q': "black_queen", 'k': "black_king",
-    'P': "white_pawn", 'R': "white_rook", 'N': "white_knight", 'B': "white_bishop", 'Q': "white_queen", 'K': "white_king"
+    'P': "white_pawn", 'R': "white_rook", 'N': "white_knight", 'B': "white_bishop", 'Q': "white_queen", 'K': "white_king",
+    ' ': "empty"
 }
 
 import matplotlib.pyplot as plt
@@ -12,6 +14,37 @@ import matplotlib.pyplot as plt
 
 import matplotlib.pyplot as plt
 import cv2
+
+
+def extract_figure(square_image):
+            # Apply Gaussian blur to reduce noise
+            blurred_square = cv2.GaussianBlur(square_image, (5, 5), 0)
+
+            # Apply adaptive thresholding to get a binary image (figure contours)
+            binary_square = cv2.adaptiveThreshold(
+                blurred_square, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                cv2.THRESH_BINARY_INV, 7, 2
+            )
+
+            # Perform morphological operations to clean up the binary image
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            #binary_square = cv2.morphologyEx(binary_square, cv2.MORPH_CLOSE, kernel)
+
+            # Find contours of the figure
+            contours, _ = cv2.findContours(binary_square, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+            # Create a mask of the same size as the square image
+            mask = np.zeros_like(binary_square)
+
+            # Fill the detected contours on the mask
+            cv2.drawContours(mask, contours, -1, (255), thickness=cv2.FILLED)
+            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+            mask = cv2.erode(mask, kernel, iterations=2)
+
+
+            # Subtract the background using the filled mask
+            figure_only = cv2.bitwise_and(square_image, mask)
+            return figure_only
 
 def show_images_interactive(image1, image2, title1="Image 1", title2="Image 2"):
     """
@@ -104,56 +137,29 @@ def extract_piece_images(image_path, fen):
     for rank_idx, rank in enumerate(ranks):
         file_idx = 0
         for char in rank:
-            if char.isdigit():
-                # Skip empty squares (number of empty squares)
-                file_idx += int(char)
-            elif char in piece_map:
-                # Calculate the coordinates of the square
-                x_start = file_idx * square_size + 2
-                y_start = rank_idx * square_size + 2
-                x_end = x_start + square_size - 2
-                y_end = y_start + square_size - 2
+            # Calculate the coordinates of the square
+            x_start = file_idx * square_size + 2
+            y_start = rank_idx * square_size + 2
+            x_end = x_start + square_size - 2
+            y_end = y_start + square_size - 2
 
-                # Extract the square image
-                square_image = gray_image[y_start:y_end, x_start:x_end]
+            # Extract the square image
+            square_image = gray_image[y_start:y_end, x_start:x_end]
 
-               # Apply Gaussian blur to reduce noise
-                blurred_square = cv2.GaussianBlur(square_image, (5, 5), 0)
-
-                # Apply adaptive thresholding to get a binary image (figure contours)
-                binary_square = cv2.adaptiveThreshold(
-                    blurred_square, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                    cv2.THRESH_BINARY_INV, 7, 2
-                )
-
-                # Perform morphological operations to clean up the binary image
-                kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-                #binary_square = cv2.morphologyEx(binary_square, cv2.MORPH_CLOSE, kernel)
-
-                # Find contours of the figure
-                contours, _ = cv2.findContours(binary_square, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-                # Create a mask of the same size as the square image
-                mask = np.zeros_like(binary_square)
-
-                # Fill the detected contours on the mask
-                cv2.drawContours(mask, contours, -1, (255), thickness=cv2.FILLED)
-
-                # Subtract the background using the filled mask
-                figure_only = cv2.bitwise_and(square_image, mask)
-
-                # Now `figure_only` contains the filled figure with the background removed
+            figure_only = extract_figure( square_image )
 
 
-
+            if char in piece_map:
                 # Get the piece type
                 piece_type = piece_map[char]
-
                 # Add the square image to the list for this piece type
                 piece_images[piece_type].append(figure_only)
-
                 # Move to the next file (column)
                 file_idx += 1
+
+            elif char.isdigit():
+                piece_images['empty'].append(figure_only)
+                file_idx += int(char)
 
     return (width, height), piece_images
 
@@ -162,14 +168,18 @@ def extract_piece_images(image_path, fen):
 import cv2
 import numpy as np
 
-def save_images_side_by_side(image1, image2, output_path="combined_image.png"):
+import cv2
+import numpy as np
+
+def save_images_side_by_side(image1, image2, output_path="combined_image.png", info=""):
     """
-    Combines two images side by side and saves the result.
+    Combines two images side by side, annotates them with information, and saves the result.
 
     Parameters:
     - image1 (ndarray): First image to be placed on the left.
     - image2 (ndarray): Second image to be placed on the right.
     - output_path (str): File path for saving the combined image.
+    - info (str): Information text to overlay on the combined image.
     """
     # Ensure both images have the same height
     height1, width1 = image1.shape[:2]
@@ -184,9 +194,31 @@ def save_images_side_by_side(image1, image2, output_path="combined_image.png"):
     # Concatenate the images horizontally
     combined_image = np.hstack((image1, image2))
 
+    # Add text overlay for info
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = .5
+    thickness = 2
+    color = (255, 255, 255)  # White text
+    text_size = cv2.getTextSize(info, font, font_scale, thickness)[0]
+
+    # Calculate text position
+    text_x = (combined_image.shape[1] - text_size[0]) // 2
+    text_y = 10  # Text height from the top of the image
+
+    # Add a background rectangle for text visibility
+    cv2.rectangle(combined_image, 
+                  (text_x - 10, text_y - text_size[1] - 10), 
+                  (text_x + text_size[0] + 10, text_y + 10), 
+                  (0, 0, 0), 
+                  -1)  # Black rectangle
+
+    # Overlay the text
+    cv2.putText(combined_image, info, (text_x, text_y), font, font_scale, color, thickness)
+
     # Save the combined image
     cv2.imwrite(output_path, combined_image)
     print(f"Combined image saved as {output_path}")
+
 
 # Example usage:
 # save_images_side_by_side(template_image, square_image, "combined_output.png")
@@ -216,7 +248,10 @@ def calculate_hu_moments(image):
     
     return hu_moments
 
+
+
 def match_figure_by_moments(square_image, templates):
+    global filenum
     """
     Matches the given square image to the closest figure template using Hu Moments.
 
@@ -235,14 +270,22 @@ def match_figure_by_moments(square_image, templates):
     best_match = ""
     min_distance = float("inf")
 
+    #optmap={}
     # Iterate over each FEN character and its list of template images
     for fen_char, image_list in templates.items():
         for template_image in image_list:
             # Calculate Hu Moments for the template image
             template_moments = calculate_hu_moments(template_image)
+            
 
             # Calculate the distance between Hu Moments (log scale for stability)
             distance = np.sum(np.abs(np.log(np.abs(square_moments)) - np.log(np.abs(template_moments))))
+            try:
+                #save_images_side_by_side( template_image, square_image, "/tmp/img/compare_%d.png" % (filenum), str(int(distance*10)) )
+                pass
+            except:
+                pass
+            filenum += 1
 
             # Update the best match if the distance is smaller
             if distance < min_distance:
@@ -299,10 +342,8 @@ def match_figure(square_image, templates):
     return best_match
 
 
-import cv2
-import numpy as np
 
-def extract_fen_from_image(image_path, board_size templates, player="W"):
+def extract_fen_from_image(image_path, templates, player="W"):
     """
     Extracts the FEN string from the given board image using figure templates.
 
@@ -316,7 +357,6 @@ def extract_fen_from_image(image_path, board_size templates, player="W"):
     """
     # Load the board image and preprocess it
     image = cv2.imread(image_path)
-    image = cv2.resize(image, board_size, interpolation=cv2.INTER_LINEAR)
 
     gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
@@ -346,33 +386,12 @@ def extract_fen_from_image(image_path, board_size templates, player="W"):
             # Extract the square image
             square_image = gray_image[y_start:y_end, x_start:x_end]
 
-            # Apply Gaussian blur to reduce noise
-            blurred_square = cv2.GaussianBlur(square_image, (5, 5), 0)
+            figure_only = extract_figure(square_image)
 
-            # Apply adaptive thresholding to get a binary image (figure contours)
-            binary_square = cv2.adaptiveThreshold(
-                blurred_square, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                cv2.THRESH_BINARY_INV, 7, 2
-            )
+            
 
-            # Perform morphological operations to clean up the binary image
-            kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
-            # binary_square = cv2.morphologyEx(binary_square, cv2.MORPH_CLOSE, kernel)
-
-            # Find contours of the figure
-            contours, _ = cv2.findContours(binary_square, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-            # Create a mask of the same size as the square image
-            mask = np.zeros_like(binary_square)
-
-            # Fill the detected contours on the mask
-            cv2.drawContours(mask, contours, -1, (255), thickness=cv2.FILLED)
-
-            # Subtract the background using the filled mask
-            figure_only = cv2.bitwise_and(square_image, mask)
-
-            # Match the square with the figure templates
             matched_piece = match_figure_by_moments(figure_only, templates)
+            #matched_piece = match_figure(figure_only, templates)
 
             if matched_piece:
                 # Map the matched piece to the FEN character
@@ -405,7 +424,7 @@ if __name__ == "__main__":
     fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 
     # Extract piece images based on the FEN string
-    piece_images = extract_piece_images(image_path, fen)
+    board_size, piece_images = extract_piece_images(image_path, fen)
 
   
     # Print the number of images extracted for each piece type

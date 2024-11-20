@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
 from PyQt5.QtCore import Qt, QEvent, QSize, QTimer
 from PyQt5.QtSvg import QSvgWidget
 from PyQt5.QtCore import QTimer
-
+from PIL import ImageGrab
 import cv2
 import numpy as np
 import pyautogui
@@ -25,7 +25,7 @@ screenshot_path = "/tmp/screenshot.png"
 template_path = "./templ1.png"
 startimg = "./startboard.png"
 output_path = "./extracted_chessboard.png"
-startfen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+startfen = "rnbqkbnr/pppppppp/2qk4/8/8/2QK4/PPPPPPPP/RNBQKBNR"
 
 
 # Extract piece images based on the FEN string
@@ -85,7 +85,7 @@ class Ui(QtWidgets.QMainWindow):
         self.bGetPos.clicked.connect(self.getPos)
 
         self.stockfish = Stockfish(path="stockfish/stockfish",
-                      depth=18, parameters={"Threads": 2, "Minimum Thinking Time": 3})
+                      depth=18, parameters={"Threads": 2, "Minimum Thinking Time": 1})
 
         self.board = chess.Board()
         self.svgWidget = QtSvg.QSvgWidget('')
@@ -127,18 +127,28 @@ class Ui(QtWidgets.QMainWindow):
 
     def getPos(self):
         move_uci = self.eMove.text()
-        screenshot = pyautogui.screenshot()
+
+
+        # Take a screenshot
+        screenshot = ImageGrab.grab()
+
+        # Save or display the screenshot
+        #screenshot.save("screenshot.png")
+        #screenshot.show()
+
+        #screenshot = pyautogui.screenshot()
         screenshot_np = np.array(screenshot)
         screenshot_cv = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
         cv2.imwrite(screenshot_path, screenshot_cv)
-        chessboard_image, coordinates = get_chessboard( screenshot_path, template_path, output_path )
+        chessboard_image, coordinates = get_chessboard(board_size, screenshot_path, template_path, output_path )
         player = "W"
         if self.cbTurnBoard.isChecked():
             player = "B"
-        fen = extract_fen_from_image( output_path, board_size, piece_images, player )
+        fen = extract_fen_from_image( output_path, piece_images, player )
         self.tFen.setPlainText( fen )
+        self.processFen()
 
-        self.updateBoard()
+        #self.updateBoard()
 
     def move(self):
         move_uci = self.eMove.text()
@@ -154,7 +164,6 @@ class Ui(QtWidgets.QMainWindow):
                 self.tBookText.setText("Best {0}".format(bestMove))
                 move = chess.Move.from_uci(bestMove)
                 self.makeMove(move)
-        self.updateBoard()
 
     def eventFilter(self, watched, event):
         if watched == self.svgWidget and event.type() == QEvent.MouseButtonPress:
@@ -175,8 +184,10 @@ class Ui(QtWidgets.QMainWindow):
         return square
 
     def makeMove(self, move ):
-        self.board.push(move)
-        self.lastMove = move
+        if self.cbOppAutoMove.isChecked():
+            self.board.push(move)
+            self.lastMove = move
+            self.updateBoard(True)
 
     def handle_square_selection(self, square):
         if self.cbTurnBoard.isChecked():
@@ -196,7 +207,6 @@ class Ui(QtWidgets.QMainWindow):
             print(move)
             if move in self.board.legal_moves:
                 self.makeMove(move)
-                self.updateBoard(True)
             self.selected_square = None  # reset selected square after move
             QTimer.singleShot(100, self.move)
             #self.move()
@@ -213,6 +223,8 @@ class Ui(QtWidgets.QMainWindow):
 
 
         valid_fen = self.board.fen()  # 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2'
+        if self.cbTurnBoard.isChecked():
+            valid_fen = valid_fen.replace(" w ", " b ")
         self.stockfish.set_fen_position(valid_fen)
         best_move = self.stockfish.get_best_move()
         evaluation = self.stockfish.get_evaluation()
@@ -238,15 +250,18 @@ class Ui(QtWidgets.QMainWindow):
 
         arrows = self.get_attack_arrows()
 
-        valid_fen = self.board.fen()  # 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2'
-        self.stockfish.set_fen_position(valid_fen)
-        bestMove = self.stockfish.get_best_move()
-        if bestMove is not None:
-            self.tBookText.setText("Best {0}".format(bestMove))
-            move = chess.Move.from_uci(bestMove)
+        #valid_fen = self.board.fen()  # 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2'
+
+        #if self.cbTurnBoard.isChecked():
+        #    valid_fen = valid_fen.replace(" w ", " b ")
+        #self.stockfish.set_fen_position(valid_fen)
+        #bestMove = self.stockfish.get_best_move()
+        if best_move is not None:
+            self.tBookText.setText("Best {0}".format(best_move))
+            move = chess.Move.from_uci(best_move)
 
             if self.cbOppAutoMove.isChecked():
-                move = chess.Move.from_uci(bestMove)
+                move = chess.Move.from_uci(best_move)
 
             # Extracting the from_square and to_square
             square = move.from_square

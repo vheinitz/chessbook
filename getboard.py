@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 
-def get_chessboard(screenshot_path="/tmp/screenshot.png", template_path="./templ1.png", output_path="extracted_chessboard.png"):
+def get_chessboard(board_size, screenshot_path="/tmp/screenshot.png", template_path="./templ1.png", output_path="extracted_chessboard.png"):
     """
     Extracts the chessboard region from a screenshot image using back projection.
 
@@ -55,7 +55,9 @@ def get_chessboard(screenshot_path="/tmp/screenshot.png", template_path="./templ
     x, y, w, h = cv2.boundingRect(largest_contour)
 
     # Extract the chessboard region from the original image
-    chessboard_region = image[y:y+h, x:x+w]
+    tmp_img = image[y:y+h, x:x+w]
+
+    chessboard_region = cv2.resize(tmp_img, board_size, interpolation=cv2.INTER_LINEAR)
 
     # Save the extracted chessboard image
     cv2.imwrite(output_path, chessboard_region)
