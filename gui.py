@@ -1,21 +1,19 @@
-
-from PyQt5 import QtWidgets, uic, QtSvg, QtGui
 import sys
-from chessboard import display
-import chess
-import chess.svg
-import time
-import random
-from stockfish import Stockfish
-from PyQt5.QtCore import Qt
-from PyQt5.QtWidgets import QApplication, QMainWindow, QVBoxLayout, QWidget
+import os
+
+# Workaround: cv2 sets QT_QPA_PLATFORM_PLUGIN_PATH to its own bundled Qt plugins
+# which are incompatible with PyQt5. Unset it so PyQt5 uses its own.
+import cv2
+os.environ.pop('QT_QPA_PLATFORM_PLUGIN_PATH', None)
+
+from PyQt5 import QtWidgets, uic, QtSvg
 from PyQt5.QtCore import Qt, QEvent, QSize, QTimer
 from PyQt5.QtSvg import QSvgWidget
-from PyQt5.QtCore import QTimer
+import chess
+import chess.svg
+from stockfish import Stockfish
 from PIL import ImageGrab
-import cv2
 import numpy as np
-import pyautogui
 
 from getboard import get_chessboard
 from init_figures import extract_piece_images
@@ -25,11 +23,15 @@ screenshot_path = "/tmp/screenshot.png"
 template_path = "./templ1.png"
 startimg = "./startboard.png"
 output_path = "./extracted_chessboard.png"
-startfen = "rnbqkbnr/pppppppp/2qk4/8/8/2QK4/PPPPPPPP/RNBQKBNR"
+startfen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+calib_path = "./calibration_board.png"
 
 
-# Extract piece images based on the FEN string
+# Extract piece images from the reference board (used as fallback)
 board_size, piece_images = extract_piece_images(startimg, startfen)
+
+# Calibrated templates extracted from the actual captured board
+calibrated_templates = None
 
 ###############################################
 from anytree import Node, RenderTree
@@ -50,27 +52,6 @@ class ChessMoveNode(NodeMixin):  # Inherits from NodeMixin
             self.children = children
 
 
-
-# Create Tree
-root = ChessMoveNode("start","scandinavian", data="d2d4")
-child1 = Node("a7a6", parent=root)
-child2 = Node("h7h6", parent=root)
-
-# Export to JSON
-exporter = JsonExporter(indent=2, sort_keys=True)
-with open('tree.json', 'w') as outfile:
-    outfile.write(exporter.export(root))
-
-# Import from JSON
-importer = JsonImporter()
-#with open('tree.json', 'r') as infile:
-#    root = importer.import_(infile)
-
-# Print Tree
-for pre, _, node in RenderTree(root):
-    print("%s%s" % (pre, node.name))
-############################################
-
 class Ui(QtWidgets.QMainWindow):
     def __init__(self):
         super(Ui, self).__init__()
@@ -81,7 +62,9 @@ class Ui(QtWidgets.QMainWindow):
         self.bBack.clicked.connect(self.backClicked )
         self.bForward.clicked.connect(self.forwardClicked)
         self.bSetFen.clicked.connect(self.processFen)
-        self.bMove.clicked.connect(self.move)
+        self.bMove.clicked.connect(self.onMove)
+        self.bAddVar.clicked.connect(self.addVar)
+        
         self.bGetPos.clicked.connect(self.getPos)
 
         self.stockfish = Stockfish(path="stockfish/stockfish",
@@ -103,7 +86,7 @@ class Ui(QtWidgets.QMainWindow):
 
     def processTurnBoard(self, ornt):
         self.updateBoard()
-        QTimer.singleShot(1000, self.move)
+        QTimer.singleShot(1000, self.onMove)
 
     def backClicked(self):
         self.lastMove = None
@@ -126,6 +109,8 @@ class Ui(QtWidgets.QMainWindow):
         self.updateBoard()
 
     def getPos(self):
+        global piece_images, calibrated_templates
+        
         move_uci = self.eMove.text()
 
 
@@ -136,7 +121,6 @@ class Ui(QtWidgets.QMainWindow):
         #screenshot.save("screenshot.png")
         #screenshot.show()
 
-        #screenshot = pyautogui.screenshot()
         screenshot_np = np.array(screenshot)
         screenshot_cv = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
         cv2.imwrite(screenshot_path, screenshot_cv)
@@ -144,13 +128,27 @@ class Ui(QtWidgets.QMainWindow):
         player = "W"
         if self.cbTurnBoard.isChecked():
             player = "B"
-        fen = extract_fen_from_image( output_path, piece_images, player )
+        
+        # Auto-calibrate: extract templates from the captured board itself,
+        # assuming the starting position (or use the current board FEN).
+        # This ensures templates match the actual rendering on screen.
+        if calibrated_templates is None:
+            # Calibrate: extract piece templates from the captured board
+            # assuming standard starting position
+            calib_size, calibrated_templates = extract_piece_images(
+                output_path, startfen)
+            cv2.imwrite(calib_path, cv2.imread(output_path))
+            print(f"Calibrated templates from captured board ({calib_size})")
+        
+        # Use calibrated templates for recognition
+        templates = calibrated_templates if calibrated_templates is not None else piece_images
+        fen = extract_fen_from_image( output_path, templates, player )
         self.tFen.setPlainText( fen )
         self.processFen()
 
         #self.updateBoard()
 
-    def move(self):
+    def onMove(self):
         move_uci = self.eMove.text()
 
         if len(move_uci)>0 :
@@ -164,6 +162,11 @@ class Ui(QtWidgets.QMainWindow):
                 self.tBookText.setText("Best {0}".format(bestMove))
                 move = chess.Move.from_uci(bestMove)
                 self.makeMove(move)
+    
+    def addVar(self):
+        valid_fen = self.board.fen()  # 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2'
+        print (valid_fen)
+ 
 
     def eventFilter(self, watched, event):
         if watched == self.svgWidget and event.type() == QEvent.MouseButtonPress:
@@ -184,7 +187,7 @@ class Ui(QtWidgets.QMainWindow):
         return square
 
     def makeMove(self, move ):
-        if self.cbOppAutoMove.isChecked():
+        #if self.cbOppAutoMove.isChecked():
             self.board.push(move)
             self.lastMove = move
             self.updateBoard(True)
@@ -208,8 +211,8 @@ class Ui(QtWidgets.QMainWindow):
             if move in self.board.legal_moves:
                 self.makeMove(move)
             self.selected_square = None  # reset selected square after move
-            QTimer.singleShot(100, self.move)
-            #self.move()
+            QTimer.singleShot(100, self.onMove)
+            #self.onMove()
 
     def updateBoard(self, autoMove=False):
         arrows = []

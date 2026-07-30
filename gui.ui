@@ -101,6 +101,13 @@
            </widget>
           </item>
           <item>
+           <widget class="QPushButton" name="bAddVar">
+            <property name="text">
+             <string>AddVar</string>
+            </property>
+           </widget>
+          </item>
+          <item>
            <widget class="QCheckBox" name="cbOppAutoMove">
             <property name="text">
              <string>Auto</string>
