@@ -14,6 +14,17 @@ piece_map = {
 # Reverse mapping: piece name -> FEN char
 fen_map = {v: k for k, v in piece_map.items()}
 
+# Smallest share of a square a real figure covers.  Measured on the green
+# lichess theme: pieces occupy 16-40% of their square, while the rank/file
+# coordinate labels some boards paint into the corner squares ("a", "1", ...)
+# stay below 1%.  Everything below this fraction counts as an empty square,
+# which keeps those labels from being matched as pieces.
+MIN_FIGURE_FRACTION = 0.05
+
+# Inset of the crop taken from each square, as a fraction of the square size.
+# Keeps the border between two squares out of the figure mask.
+SQUARE_MARGIN_FRACTION = 3.0 / 72.0
+
 
 def match_histogram(source, template):
     """Match the histogram of source image to template image."""
@@ -31,6 +42,35 @@ def match_histogram(source, template):
             lut[k] = min(j, 255)
         src[:, :, i] = cv2.LUT(src[:, :, i], lut)
     return src
+
+
+def crop_square(gray_image, row, col):
+    """
+    Crops the square at (row, col) of an 8x8 board, slightly inset.
+
+    Template extraction and recognition must crop identically, otherwise the
+    figure masks no longer line up - hence this single helper.  The square size
+    is deliberately truncated (width // 8), which shifts the grid slightly up
+    and to the left; that keeps the coordinate labels some boards paint into
+    the a1/h1 corners out of the crop.
+    """
+    width = gray_image.shape[1]
+    square_size = width // 8
+    margin = int(round(square_size * SQUARE_MARGIN_FRACTION))
+
+    x_start = col * square_size + margin
+    y_start = row * square_size + margin
+    x_end = x_start + square_size - 2 * margin
+    y_end = y_start + square_size - 2 * margin
+
+    return gray_image[y_start:y_end, x_start:x_end]
+
+
+def is_empty_square(figure_only):
+    """True if the extracted figure is too small to be a real piece."""
+    if figure_only.size == 0:
+        return True
+    return np.count_nonzero(figure_only) < MIN_FIGURE_FRACTION * figure_only.size
 
 
 def extract_figure(square_image):
@@ -88,9 +128,7 @@ def extract_piece_images(image_path, fen):
     # Convert the image to grayscale
     gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # Calculate the size of each square (assuming an 8x8 board)
     height, width = gray_image.shape[:2]
-    square_size = width // 8
 
     # Initialize a dictionary to store images of each piece type
     piece_images = {ptype: [] for ptype in piece_map.values()}
@@ -102,14 +140,8 @@ def extract_piece_images(image_path, fen):
     for rank_idx, rank in enumerate(ranks):
         file_idx = 0
         for char in rank:
-            # Calculate the coordinates of the square
-            x_start = file_idx * square_size + 3
-            y_start = rank_idx * square_size + 3
-            x_end = x_start + square_size - 6
-            y_end = y_start + square_size - 6
-
             # Extract the square image
-            square_image = gray_image[y_start:y_end, x_start:x_end]
+            square_image = crop_square(gray_image, rank_idx, file_idx)
 
             figure_only = extract_figure(square_image)
 
@@ -142,13 +174,49 @@ def calculate_hu_moments(image):
     return -np.sign(hu_moments) * np.log10(np.abs(hu_moments) + epsilon)
 
 
-def match_figure_by_moments(square_image, templates):
+def figure_brightness(figure_only):
+    """Mean intensity of the figure's own pixels (0.0 for an empty mask)."""
+    mask = figure_only > 0
+    if not mask.any():
+        return 0.0
+    return float(figure_only[mask].mean())
+
+
+def brightness_threshold(templates):
+    """
+    Brightness that separates black from white figures for these templates.
+
+    Hu moments are normalized, so they describe the shape but say nothing about
+    whether a figure is black or white - a rescaled black knight can end up
+    closer to the white knight template than to the black one.  The figures
+    themselves are far apart in brightness though (on the green theme: ~88 for
+    black, ~220 for white), so the color can simply be read off the pixels.
+
+    Returns None if black and white templates are not clearly separable, in
+    which case the caller matches against every template as before.
+    """
+    whites = [figure_brightness(image)
+              for name, images in templates.items() if name.startswith("white")
+              for image in images]
+    blacks = [figure_brightness(image)
+              for name, images in templates.items() if name.startswith("black")
+              for image in images]
+
+    if not whites or not blacks or min(whites) <= max(blacks):
+        return None
+
+    return (min(whites) + max(blacks)) / 2.0
+
+
+def match_figure_by_moments(square_image, templates, color_threshold=None):
     """
     Matches a square image to the closest figure template using Hu Moments.
 
     Parameters:
     - square_image: Grayscale image of the square with figure extracted.
     - templates: Dict mapping piece type names to lists of template images.
+    - color_threshold: Brightness separating black from white figures, see
+      brightness_threshold(). None disables the color check.
 
     Returns:
     - Matched piece type name (e.g., "white_pawn"), or "empty" for no match.
@@ -158,6 +226,13 @@ def match_figure_by_moments(square_image, templates):
     if square_moments is None:
         return ""
 
+    # Decide up front whether we are looking at a black or a white figure and
+    # only compare against the templates of that color.
+    wanted_color = None
+    if color_threshold is not None:
+        wanted_color = ("white" if figure_brightness(square_image) > color_threshold
+                        else "black")
+
     best_match = ""
     min_distance = float("inf")
 
@@ -165,6 +240,8 @@ def match_figure_by_moments(square_image, templates):
     for piece_type, image_list in templates.items():
         if piece_type == "empty":
             continue  # Handle empty separately
+        if wanted_color is not None and not piece_type.startswith(wanted_color):
+            continue
         for template_image in image_list:
             template_moments = calculate_hu_moments(template_image)
             if template_moments is None:
@@ -179,8 +256,7 @@ def match_figure_by_moments(square_image, templates):
 
     # If the best match distance is too high, or the square is mostly empty,
     # classify as empty
-    non_zero = np.count_nonzero(square_image)
-    if non_zero < 10:
+    if is_empty_square(square_image):
         return ""
 
     # Reject if the best match is too far (very different from any template)
@@ -217,9 +293,8 @@ def extract_fen_from_image(image_path, templates, player="W", reference_path=Non
 
     gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
 
-    # Calculate the size of each square (assuming an 8x8 board)
-    height, width = gray_image.shape[:2]
-    square_size = width // 8
+    # Brightness that tells black figures from white ones (computed once)
+    color_threshold = brightness_threshold(templates)
 
     # Initialize the FEN string components
     fen_rows = []
@@ -234,24 +309,18 @@ def extract_fen_from_image(image_path, templates, player="W", reference_path=Non
             actual_rank = rank if player == "W" else 7 - rank
             actual_file = file if player == "W" else 7 - file
 
-            # Calculate the coordinates of the current square
-            margin = 3
-            x_start = actual_file * square_size + margin
-            y_start = actual_rank * square_size + margin
-            x_end = x_start + square_size - 2 * margin
-            y_end = y_start + square_size - 2 * margin
-
             # Extract the square image
-            square_image = gray_image[y_start:y_end, x_start:x_end]
+            square_image = crop_square(gray_image, actual_rank, actual_file)
 
             # Extract the figure from the square
             figure_only = extract_figure(square_image)
 
-            # Check if the square is empty (very few non-zero pixels)
-            if np.count_nonzero(figure_only) < 15:
+            # Check if the square is empty (or only holds a coordinate label)
+            if is_empty_square(figure_only):
                 empty_count += 1
             else:
-                matched_piece = match_figure_by_moments(figure_only, templates)
+                matched_piece = match_figure_by_moments(figure_only, templates,
+                                                        color_threshold)
                 if matched_piece and matched_piece in fen_map:
                     fen_char = fen_map[matched_piece]
                     if empty_count > 0:
@@ -274,9 +343,10 @@ def extract_fen_from_image(image_path, templates, player="W", reference_path=Non
 
 
 if __name__ == "__main__":
-    # Example usage
+    # Example usage - the FEN has to describe startboard.png exactly, including
+    # the extra queens/kings it carries on c6/d6 and c3/d3.
     image_path = "startboard.png"
-    fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+    fen = "rnbqkbnr/pppppppp/2qk4/8/8/2QK4/PPPPPPPP/RNBQKBNR"
 
     # Extract piece images based on the FEN string
     board_size, piece_images = extract_piece_images(image_path, fen)
@@ -286,7 +356,8 @@ if __name__ == "__main__":
         print(f"{piece_type}: {len(images)} images extracted")
 
     # Example usage
+    # No reference_path here: histogram matching distorts the piece contrast
+    # and makes the matching noticeably worse, so the GUI does not use it either.
     new_board_image_path = "extracted_chessboard.png"
-    fen = extract_fen_from_image(new_board_image_path, piece_images,
-                                  reference_path=image_path)
+    fen = extract_fen_from_image(new_board_image_path, piece_images)
     print("Extracted FEN:", fen)

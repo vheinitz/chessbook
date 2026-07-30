@@ -12,19 +12,27 @@ from PyQt5.QtSvg import QSvgWidget
 import chess
 import chess.svg
 from stockfish import Stockfish
-from PIL import ImageGrab
-import numpy as np
 
 from getboard import get_chessboard
 from init_figures import extract_piece_images
 from init_figures import extract_fen_from_image
+from screengrab import grab_screen
 
 screenshot_path = "/tmp/screenshot.png"
 template_path = "./templ1.png"
 startimg = "./startboard.png"
 output_path = "./extracted_chessboard.png"
-startfen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 calib_path = "./calibration_board.png"
+
+# Position shown in startboard.png.  It is NOT the initial position: the extra
+# queens and kings on c6/d6 and c3/d3 are there so that every piece type has a
+# template on a light *and* on a dark square.  This string has to describe
+# startboard.png exactly, otherwise the templates end up with wrong labels.
+startfen = "rnbqkbnr/pppppppp/2qk4/8/8/2QK4/PPPPPPPP/RNBQKBNR"
+
+# The real initial position - used to check whether re-calibrating on the
+# captured board is safe.
+initial_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
 
 
 # Extract piece images from the reference board (used as fallback)
@@ -113,36 +121,34 @@ class Ui(QtWidgets.QMainWindow):
         
         move_uci = self.eMove.text()
 
+        # Take a screenshot (silently - no flash, no shutter sound)
+        grab_screen(screenshot_path)
 
-        # Take a screenshot
-        screenshot = ImageGrab.grab()
-
-        # Save or display the screenshot
-        #screenshot.save("screenshot.png")
-        #screenshot.show()
-
-        screenshot_np = np.array(screenshot)
-        screenshot_cv = cv2.cvtColor(screenshot_np, cv2.COLOR_RGB2BGR)
-        cv2.imwrite(screenshot_path, screenshot_cv)
         chessboard_image, coordinates = get_chessboard(board_size, screenshot_path, template_path, output_path )
         player = "W"
         if self.cbTurnBoard.isChecked():
             player = "B"
-        
-        # Auto-calibrate: extract templates from the captured board itself,
-        # assuming the starting position (or use the current board FEN).
-        # This ensures templates match the actual rendering on screen.
-        if calibrated_templates is None:
-            # Calibrate: extract piece templates from the captured board
-            # assuming standard starting position
-            calib_size, calibrated_templates = extract_piece_images(
-                output_path, startfen)
-            cv2.imwrite(calib_path, cv2.imread(output_path))
-            print(f"Calibrated templates from captured board ({calib_size})")
-        
-        # Use calibrated templates for recognition
+
+        # Recognize with the templates from the reference board, plus the
+        # calibrated ones once we have them.
         templates = calibrated_templates if calibrated_templates is not None else piece_images
         fen = extract_fen_from_image( output_path, templates, player )
+
+        # Calibration: templates taken from the board on screen match its
+        # rendering exactly.  It is only safe when we know which piece sits on
+        # which square, i.e. when the captured board shows the initial position
+        # with white at the bottom.  Calibrating on any other position labels
+        # the templates wrongly - a knight would land in the pawn template list
+        # and every knight from then on would be read as a pawn.
+        if calibrated_templates is None and player == "W" and fen == initial_fen:
+            calib_size, calib = extract_piece_images(output_path, fen)
+            merged = {name: list(images) for name, images in piece_images.items()}
+            for name, images in calib.items():
+                merged[name].extend(images)
+            calibrated_templates = merged
+            cv2.imwrite(calib_path, cv2.imread(output_path))
+            print(f"Calibrated templates from captured board ({calib_size})")
+
         self.tFen.setPlainText( fen )
         self.processFen()
 
