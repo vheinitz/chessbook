@@ -1,0 +1,20 @@
+# Python packages needed by gui.py.
+# Install with:  pip install -r requirements.txt   (or run ./build.sh)
+
+PyQt5>=5.15          # GUI toolkit, loads gui.ui
+opencv-python>=4.5   # board detection and piece recognition
+numpy>=1.21
+Pillow>=9.0          # screen capture fallback when GNOME/D-Bus is unavailable
+chess>=1.9           # python-chess: board model, legal moves, SVG rendering
+stockfish>=3.28      # thin UCI wrapper, drives the engine binary
+anytree>=2.8         # move tree
+
+# Optional, but this is what makes screenshots silent (no flash, no shutter
+# sound) on a GNOME session.  Prefer the distribution package - building
+# PyGObject from source needs libgirepository and friends:
+#
+#     sudo apt install python3-gi
+#
+# In a virtualenv, create it with --system-site-packages so python3-gi is
+# visible (./build.sh --venv does that).  Uncomment to install via pip instead:
+# PyGObject>=3.42

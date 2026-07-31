@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Virtual environment
+.venv/
+pyqt_env/
+pyvenv.cfg
+bin/
+lib/
+lib64/
+include/
+
+# IDE
+.idea/
+.vscode/
+
+# Stockfish build output (./build.sh recreates all of it)
+stockfish/src/*.o
+stockfish/src/.depend
+stockfish/src/stockfish
+stockfish/stockfish
+
+# Generated/runtime files
+extracted_chessboard.png
+calibration_board.png
+/tmp/
