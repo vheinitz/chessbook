@@ -84,6 +84,9 @@ python3 gui.py        # or .venv/bin/python gui.py
 Run it from the repository directory - `gui.ui`, `startboard.png`, `templ1.png` and
 `stockfish/stockfish` are all loaded by relative path.
 
+Position and size of the window are remembered between sessions in
+`~/.config/chessbook/chessbook.conf`. Delete that file to start from scratch.
+
 ## Using it
 
 | Control | What it does |
@@ -135,6 +138,11 @@ save it as `templ1.png`.
 change the reference permanently, replace `startboard.png` and update `startfen` in
 `gui.py` accordingly (see above). `extracted_chessboard.png` always holds the last
 cropped board - a good place to look when something goes wrong.
+
+**"Position not playable" instead of a best move.** The position is illegal - the
+recognition missed a king, for example. Correct the FEN by hand or capture again.
+Such positions are deliberately kept away from the engine: Stockfish does not reject
+them, it crashes on them.
 
 **Every screenshot flashes and beeps.** PyGObject is missing:
 `sudo apt install python3-gi`. `python3 screengrab.py` prints which backend is in use.

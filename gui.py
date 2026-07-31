@@ -1,13 +1,14 @@
 import sys
 import os
+import traceback
 
 # Workaround: cv2 sets QT_QPA_PLATFORM_PLUGIN_PATH to its own bundled Qt plugins
 # which are incompatible with PyQt5. Unset it so PyQt5 uses its own.
 import cv2
 os.environ.pop('QT_QPA_PLATFORM_PLUGIN_PATH', None)
 
-from PyQt5 import QtWidgets, uic, QtSvg
-from PyQt5.QtCore import Qt, QEvent, QSize, QTimer
+from PyQt5 import QtWidgets, uic, QtSvg, QtCore
+from PyQt5.QtCore import Qt, QEvent, QSize, QTimer, QSettings
 from PyQt5.QtSvg import QSvgWidget
 import chess
 import chess.svg
@@ -65,6 +66,11 @@ class Ui(QtWidgets.QMainWindow):
         super(Ui, self).__init__()
         uic.loadUi('gui.ui', self)
         self.selected_square = None
+
+        # Window position and size of the last session (~/.config/chessbook)
+        self.settings = QSettings("chessbook", "chessbook")
+        self.restoreWindowGeometry()
+
         self.show()
 
         self.bBack.clicked.connect(self.backClicked )
@@ -75,11 +81,10 @@ class Ui(QtWidgets.QMainWindow):
         
         self.bGetPos.clicked.connect(self.getPos)
 
-        self.stockfish = Stockfish(path="stockfish/stockfish",
-                      depth=18, parameters={"Threads": 2, "Minimum Thinking Time": 1})
+        self.startEngine()
 
         self.board = chess.Board()
-        self.svgWidget = QtSvg.QSvgWidget('')
+        self.svgWidget = QtSvg.QSvgWidget()
         self.svgWidget.setMinimumSize(QSize(400,400))
         self.svgWidget.setMaximumSize(QSize(400, 400))
         self.svgWidget.installEventFilter(self)
@@ -91,6 +96,74 @@ class Ui(QtWidgets.QMainWindow):
         self.timer = QTimer()
         self.timer.timeout.connect(self.updateBoard)
         #self.timer.start(10)
+
+    def startEngine(self):
+        """Starts (or restarts) the engine process."""
+        self.stockfish = Stockfish(path="stockfish/stockfish",
+                      depth=18, parameters={"Threads": 2, "Minimum Thinking Time": 1})
+
+    def analysePosition(self, board):
+        """
+        Asks the engine for the best move and the evaluation of `board`.
+
+        Returns (None, None) when the position cannot be analysed.  Illegal
+        positions are normal here - the recognition can miss a king, and
+        flipping the side to move leaves the opponent in check - and Stockfish
+        does not survive them: it dies on the spot and takes every following
+        request with it.  So the position is validated first, and if the engine
+        crashes anyway it is restarted instead of bringing the app down.
+        """
+        if not board.is_valid():
+            return None, None
+
+        try:
+            self.stockfish.set_fen_position(board.fen())
+            return self.stockfish.get_best_move(), self.stockfish.get_evaluation()
+        except Exception as exc:
+            print(f"engine: {exc} - restarting")
+            self.startEngine()
+            return None, None
+
+    def mateSequence(self, best_move, mate_in_n):
+        """Follows the engine's mate line, starting from its current position."""
+        moves = [best_move]
+        try:
+            for _ in range(abs(mate_in_n) - 1):
+                self.stockfish.make_moves_from_current_position([moves[-1]])
+                next_move = self.stockfish.get_best_move()
+                if next_move is None:
+                    break
+                moves.append(next_move)
+        except Exception as exc:
+            print(f"engine: {exc} - restarting")
+            self.startEngine()
+        return moves
+
+    def describePosition(self, board):
+        """Explains why a position could not be analysed."""
+        if board.is_valid():
+            return "No move (mate, stalemate or engine unavailable)"
+
+        status = board.status()
+        problems = [flag.name.replace("_", " ").lower()
+                    for flag in chess.Status
+                    if flag.value and status & flag.value]
+        return "Position not playable: " + ", ".join(problems)
+
+    def restoreWindowGeometry(self):
+        """Puts the window back where it was when it was closed last time."""
+        geometry = self.settings.value("window/geometry")
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+
+    def saveWindowGeometry(self):
+        """Stores position, size and maximized state of the window."""
+        self.settings.setValue("window/geometry", self.saveGeometry())
+        self.settings.sync()
+
+    def closeEvent(self, event):
+        self.saveWindowGeometry()
+        super(Ui, self).closeEvent(event)
 
     def processTurnBoard(self, ornt):
         self.updateBoard()
@@ -109,11 +182,17 @@ class Ui(QtWidgets.QMainWindow):
 
     def processFen(self):
         self.lastMove = None
-        fen = self.tFen.toPlainText()
+        fen = self.tFen.toPlainText().strip()
         if len(fen) == 0:
             self.board.reset()
         else:
-            self.board.set_fen(fen)
+            try:
+                self.board.set_fen(fen)
+            except ValueError as exc:
+                # Hand-typed FENs and, in rare cases, the recognition can
+                # produce something python-chess refuses to parse.
+                self.tBookText.setText(f"Invalid FEN: {exc}")
+                return
         self.updateBoard()
 
     def getPos(self):
@@ -155,19 +234,26 @@ class Ui(QtWidgets.QMainWindow):
         #self.updateBoard()
 
     def onMove(self):
-        move_uci = self.eMove.text()
+        move_uci = self.eMove.text().strip()
 
         if len(move_uci)>0 :
-            move = chess.Move.from_uci(move_uci)
+            try:
+                move = chess.Move.from_uci(move_uci)
+            except ValueError:
+                self.tBookText.setText(f"Not a move: {move_uci}")
+                return
+            if move not in self.board.legal_moves:
+                self.tBookText.setText(f"Illegal move: {move_uci}")
+                return
             self.makeMove(move)
         else:
-            valid_fen = self.board.fen()  # 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2'
-            self.stockfish.set_fen_position(valid_fen)
-            bestMove = self.stockfish.get_best_move()
+            bestMove, _ = self.analysePosition(self.board)
             if bestMove is not None:
                 self.tBookText.setText("Best {0}".format(bestMove))
                 move = chess.Move.from_uci(bestMove)
                 self.makeMove(move)
+            else:
+                self.tBookText.setText(self.describePosition(self.board))
     
     def addVar(self):
         valid_fen = self.board.fen()  # 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2'
@@ -231,23 +317,22 @@ class Ui(QtWidgets.QMainWindow):
             ornt = chess.BLACK
 
 
-        valid_fen = self.board.fen()  # 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2'
+        # When the board is turned, analyse from Black's point of view.  Doing
+        # that by flipping the side to move can leave the opponent in check,
+        # which is an illegal position - fall back to the real one then.
+        analysis_board = self.board.copy()
         if self.cbTurnBoard.isChecked():
-            valid_fen = valid_fen.replace(" w ", " b ")
-        self.stockfish.set_fen_position(valid_fen)
-        best_move = self.stockfish.get_best_move()
-        evaluation = self.stockfish.get_evaluation()
+            analysis_board.turn = chess.BLACK
+        if not analysis_board.is_valid():
+            analysis_board = self.board
+
+        best_move, evaluation = self.analysePosition(analysis_board)
 
         # Check for mate
-        if evaluation["type"] == "mate":
-            moves_to_mate = [best_move]
+        if best_move is not None and evaluation["type"] == "mate":
             mate_in_n = evaluation["value"]
-            for _ in range(abs(mate_in_n) - 1):
-                self.stockfish.make_moves_from_current_position([best_move])
-                best_move = self.stockfish.get_best_move()
-                moves_to_mate.append(best_move)
+            moves_to_mate = self.mateSequence(best_move, mate_in_n)
 
-            mate_in_n = evaluation["value"]
             if mate_in_n > 0:
                 self.tMovesToMat.setText( f"Mate for White in {mate_in_n} moves." )
                 self.tMovesToMat.append( ", ".join(moves_to_mate) )
@@ -259,23 +344,16 @@ class Ui(QtWidgets.QMainWindow):
 
         arrows = self.get_attack_arrows()
 
-        #valid_fen = self.board.fen()  # 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2'
-
-        #if self.cbTurnBoard.isChecked():
-        #    valid_fen = valid_fen.replace(" w ", " b ")
-        #self.stockfish.set_fen_position(valid_fen)
-        #bestMove = self.stockfish.get_best_move()
         if best_move is not None:
             self.tBookText.setText("Best {0}".format(best_move))
             move = chess.Move.from_uci(best_move)
-
-            if self.cbOppAutoMove.isChecked():
-                move = chess.Move.from_uci(best_move)
 
             # Extracting the from_square and to_square
             square = move.from_square
             target_square = move.to_square
             arrows.append(chess.svg.Arrow(square, target_square, color='lightblue'))
+        else:
+            self.tBookText.setText(self.describePosition(analysis_board))
 
         board_svg = chess.svg.board(board=self.board, arrows=arrows, orientation=ornt, lastmove=self.lastMove)
         self.svgWidget.load(board_svg.encode('UTF-8'))
@@ -339,6 +417,33 @@ class Ui(QtWidgets.QMainWindow):
 
         return arrows
 
+
+def excepthook(exc_type, exc_value, exc_traceback):
+    """
+    Prints unhandled exceptions instead of letting the application die.
+
+    Since PyQt 5.5 an unhandled exception inside a slot ends in qFatal(), which
+    aborts the process ("Aborted (core dumped)") - one bad move or FEN would
+    close the window.  An own hook takes precedence over that.
+    """
+    traceback.print_exception(exc_type, exc_value, exc_traceback)
+
+
+def qtMessageHandler(mode, context, message):
+    """
+    Qt's own log output.
+
+    On a GNOME Wayland session Qt prints "Ignoring XDG_SESSION_TYPE=wayland on
+    Gnome" on every start, although it then simply runs on XWayland as it
+    should.  Drop that one line and pass everything else through.
+    """
+    if "Ignoring XDG_SESSION_TYPE" in message:
+        return
+    sys.stderr.write(message + "\n")
+
+
+sys.excepthook = excepthook
+QtCore.qInstallMessageHandler(qtMessageHandler)
 
 app = QtWidgets.QApplication(sys.argv)
 window = Ui()
